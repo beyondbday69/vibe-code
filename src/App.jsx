@@ -92,6 +92,8 @@ import { toolsDefinition } from './tools/definitions.js';
 import { executeToolCall } from './tools/executor.js';
 import { setApiKey, setBaseUrl, setModel, getAgents, handleTeamMessage, popUserMessages, popTeamChatLog, handleTeamSpawn, spawnHelperAgent } from './tools/handlers/agents.js';
 import { getMcpTools, initServers, stopAllServers, activeServers, addServer, removeServer } from './utils/mcp.js';
+import { loadPlugins, getPluginTools, getPluginNames } from './utils/plugins.js';
+import { executeSwarmManager } from './tools/handlers/swarm.js';
 
 const CONFIG_DIR = path.join(os.homedir(), '.vibe-code');
 const CONFIG_PATH = path.join(CONFIG_DIR, 'config.json');
@@ -441,6 +443,9 @@ const App = () => {
     (async () => {
       const config = await loadConfig();
       const env = await loadEnv();
+
+      // Initialize plugins
+      await loadPlugins();
 
       // Load custom providers
       if (config.providers && Array.isArray(config.providers)) {
@@ -941,6 +946,33 @@ const App = () => {
         }
         setInput('');
         return;
+      } else if (lowerQuery.startsWith('/swarm ')) {
+        const goal = query.slice(7).trim();
+        if (goal) {
+          setMessages(prev => [...prev, { role: 'user', content: query }, { role: 'system', content: `[System] Initiating Swarm for goal: "${goal}"...` }]);
+          executeSwarmManager(goal, activeModel).then(res => {
+            setMessages(prev => [...prev, { role: 'system', content: `[System] ${res.message}` }]);
+          }).catch(err => {
+            setMessages(prev => [...prev, { role: 'system', content: `[System] Swarm error: ${err.message}` }]);
+          });
+        }
+        setInput('');
+        return;
+      } else if (lowerQuery === '/plugins') {
+        const names = getPluginNames();
+        if (names.length === 0) {
+          setMessages(prev => [...prev, { role: 'user', content: query }, { role: 'system', content: '[System] No custom plugins loaded. Add .js files to ~/.vibe-code/plugins/ to create custom tools.' }]);
+        } else {
+          setMessages(prev => [...prev, { role: 'user', content: query }, { role: 'system', content: `[System] Loaded Plugins (${names.length}):\n${names.map(n => `  - ${n}`).join('\n')}` }]);
+        }
+        setInput('');
+        return;
+      } else if (lowerQuery === '/plugins reload') {
+        await loadPlugins();
+        const names = getPluginNames();
+        setMessages(prev => [...prev, { role: 'user', content: query }, { role: 'system', content: `[System] Plugins reloaded. Loaded Plugins (${names.length}):\n${names.map(n => `  - ${n}`).join('\n')}` }]);
+        setInput('');
+        return;
       } else if (lowerQuery === '/mcp' || lowerQuery === '/mcp list') {
         const lines = ['[MCP] Configured Servers:\n'];
         if (activeServers.size === 0) {
@@ -1118,7 +1150,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
             body: JSON.stringify({
               model: activeModel,
               messages: apiMessages,
-              tools: [...toolsDefinition, ...getMcpTools()],
+              tools: [...toolsDefinition, ...getMcpTools(), ...getPluginTools()],
               stream: true,
               stream_options: { include_usage: true },
             }),
@@ -1219,7 +1251,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
                   'Content-Type': 'application/json',
                   ...(provider.apiKey || process.env.OPENAI_API_KEY ? { 'Authorization': `Bearer ${provider.apiKey || process.env.OPENAI_API_KEY}` } : {}),
                 },
-                body: JSON.stringify({ model: activeModel, messages: apiMessages, tools: [...toolsDefinition, ...getMcpTools()], stream: true, stream_options: { include_usage: true } }),
+                body: JSON.stringify({ model: activeModel, messages: apiMessages, tools: [...toolsDefinition, ...getMcpTools(), ...getPluginTools()], stream: true, stream_options: { include_usage: true } }),
               });
               if (!res2.ok) throw new Error(`${res2.status} API Error`);
               const reader2 = res2.body.getReader();
@@ -1502,7 +1534,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
           body: JSON.stringify({
             model: activeModel,
             messages: apiMessages,
-            tools: [...toolsDefinition, ...getMcpTools()],
+            tools: [...toolsDefinition, ...getMcpTools(), ...getPluginTools()],
             stream: true,
             stream_options: { include_usage: true },
           }),

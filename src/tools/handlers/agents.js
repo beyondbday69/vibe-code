@@ -183,7 +183,8 @@ async function callAI(messages, modelOverride) {
       model: modelOverride || activeModel,
       messages,
       tools,
-      stream: false,
+      stream: true,
+      stream_options: { include_usage: true },
     }),
     signal: AbortSignal.timeout(120_000),
   });
@@ -193,11 +194,56 @@ async function callAI(messages, modelOverride) {
     throw new Error(`API Error ${res.status}: ${err.slice(0, 100)}`);
   }
 
-  const json = await res.json();
-  if (!json.choices || json.choices.length === 0) {
-    throw new Error('No choices returned by API');
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let content = '';
+  let toolCalls = [];
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    const chunk = decoder.decode(value, { stream: true });
+    const lines = chunk.split('\n').filter(l => l.trim().startsWith('data: ') && !l.includes('[DONE]'));
+    
+    for (const line of lines) {
+      try {
+        const data = JSON.parse(line.replace(/^data:\s*/, ''));
+        if (!data.choices || data.choices.length === 0) continue;
+        const delta = data.choices[0].delta;
+        if (!delta) continue;
+
+        if (delta.content) {
+          content += delta.content;
+        }
+
+        if (delta.tool_calls) {
+          for (const tc of delta.tool_calls) {
+            const idx = tc.index;
+            if (!toolCalls[idx]) {
+              toolCalls[idx] = {
+                id: tc.id || '',
+                type: 'function',
+                function: { name: tc.function?.name || '', arguments: tc.function?.arguments || '' }
+              };
+            } else {
+              if (tc.function?.arguments) {
+                toolCalls[idx].function.arguments += tc.function.arguments;
+              }
+            }
+          }
+        }
+      } catch (e) {
+        // ignore parse errors for partial chunks
+      }
+    }
   }
-  return json.choices[0].message;
+
+  const finalToolCalls = toolCalls.filter(Boolean); // remove any sparse array holes
+  return {
+    role: 'assistant',
+    content: content || null,
+    ...(finalToolCalls.length > 0 ? { tool_calls: finalToolCalls } : {})
+  };
 }
 
 // ── Agent loop ────────────────────────────────────────────────────────────────

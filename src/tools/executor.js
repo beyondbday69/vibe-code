@@ -11,6 +11,7 @@ import { handleAgentSpawn, handleAgentList, handleAgentGet, handleAgentStop, han
 import { handleConceptual } from './handlers/conceptual.js';
 
 import { executeMcpToolCall } from '../utils/mcp.js';
+import { executePluginTool } from '../utils/plugins.js';
 
 const HANDLERS = {
   run_bash: handleRunBash,
@@ -78,7 +79,18 @@ export const executeToolCall = async (toolName, toolArgs, context = {}) => {
   }
   const handler = HANDLERS[toolName];
   if (!handler) {
-    return { type: 'error', message: `Unknown tool "${toolName}".` };
+    try {
+      const result = await executePluginTool(toolName, toolArgs);
+      if (typeof result === 'object' && result !== null && result.type) {
+        return result;
+      }
+      return { type: 'generic', message: String(result) };
+    } catch (e) {
+      if (e.message.includes('not found')) {
+        return { type: 'error', message: `Unknown tool "${toolName}".` };
+      }
+      return { type: 'error', message: `Error executing plugin ${toolName}: ${e.message}` };
+    }
   }
   try {
     const result = await handler(toolArgs || {}, toolName, context);
